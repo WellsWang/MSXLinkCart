@@ -1,39 +1,31 @@
 /*
-   EEPROM Programmer
+   Firmware of MSXLinkCart
 
    Based on https://github.com/bouletmarc/BMBurner
-   and modified to not need the Windows software to program
+            https://github.com/StormTrooper/eeprom_programmer
+   and modified to fit for this project.
 
-   Arduino Uno programmer which can read/write/blank check/erase E/EPROMsreads
+   Build a simple flashable MSX game cartridge.
 
-   27C256 - tested
-   Winbond W27C512 (Electrically erasable) - tested
-   27C32 - not tested
-   27C64 - not tested
-   27C128 - not tested
-   27C512 - not tested
+   Use 64KB Winbond W27C512 (Electrically erasable) EEPROM as Game ROM chip, this cartridge can store two 32KB Games.
+   Cartridge can be connected to a morden computer via USB cable and be programmed with game ROMs.
 
-   Data write to the EPROM is contained in the bin_file.h which is generated from a convert.py python file
-
-   For more information see https://blog.gjmccarthy.co.uk
-
+   For more information see https://geek-logic.com
 */
+#include <EEPROM.h>
+#include <Arduino.h>
+#include <U8x8lib.h>
 
+U8X8_SSD1306_128X32_UNIVISION_HW_I2C u8x8(/* reset=*/ U8X8_PIN_NONE);   // Adafruit ESP8266/32u4/ARM Boards + FeatherWing OLED
 
-//#include "bin_file.h"   //Contents of binary file to be programmed
-const byte bin_file[] PROGMEM = {"I AM WELLSWANG, IT is a test string."};
+const byte bin_file[] PROGMEM = {"I AM WELLSWANG from geek-logic.com, It is a test string."};
 
 
 //#define DEBUG
 
-//Define chips predefinied model numbers (2-5 is for moates compatibility, 4 is never ever as it should be used for 27SF040 which is not compatible with this project at all)
-unsigned int chipType;
-#define CHIP27C128    1   //Not tested
-#define CHIP27C256    2   //Not tested
-#define CHIP27C32     3   //INCLUDED : 2732A
-#define CHIP27SF512   5   //INCLUDED : 27C512, W27E512, W27C512
-#define CHIP28C64     6   //INCLUDED : 27C64
-#define CHIP28C256    7
+#define GAME_SELECTOR_ADDR 0
+#define GAME_INFO_ADDR 100
+#define GAME_OFFSET 100
 
 // define the IO lines for the data - bus
 #define D0 2
@@ -48,7 +40,9 @@ unsigned int chipType;
 // for high voltage programming supply
 #define VH     12     //Erase Pin (A9)  12v
 #define VPP    11    //OE Pin = VPP    12v
-//#define VPP_27C256  9 // Vpp Pin for 27C256 12V
+
+// for mode detect
+#define A15PIN  13
 
 // shiftOut part
 #define DS     A0
@@ -58,8 +52,6 @@ unsigned int chipType;
 // define the IO lines for the eeprom control
 #define CE     A3
 #define OE     10
-//#define A15VPP A5     //A15 on SST, VPP on 27C256
-//#define A10    13
 
 // direct access to port
 #define STROBE_PORT PORTC
@@ -87,46 +79,76 @@ long BlockSize;
 String mode;
 
 long Start_Address;         //0x0000, 0x2000, 0x4000, 0x6000, 0x8000, 0xa000, 0xc000, 0xe000
+int old_state, cur_state;
 
 //###############################################################
 // Setup
 //###############################################################
 void setup() {
-
   Serial.begin(115200);
+  u8x8.begin();
+  u8x8.setPowerSave(0);
 
-  Serial.println("eeprom programmer v1.1");
-  Serial.println("");
+  u8x8.setFont(u8x8_font_pressstart2p_r );
+  u8x8.setInverseFont(1);
+  u8x8.drawString(0, 0, "- MSXLinkCart - ");
+  u8x8.setInverseFont(0);
 
-  arraySize = sizeof(bin_file) / sizeof(bin_file[0]);
+  pinMode(A7, INPUT);
+  if (analogRead(A7) > 700) {  //PLAY MODE
+    pinMode(D0, INPUT);
+    pinMode(D1, INPUT);
+    pinMode(D2, INPUT);
+    pinMode(D3, INPUT);
+    pinMode(D4, INPUT);
+    pinMode(D5, INPUT);
+    pinMode(D6, INPUT);
+    pinMode(D7, INPUT);
+   // pinMode(OE, INPUT);
+   // pinMode(VH, INPUT);
+   // pinMode(VPP, INPUT);
+    pinMode(A15PIN, OUTPUT);
+    pinMode(A6, INPUT);
+    digitalWrite(A15PIN, EEPROM.read(GAME_SELECTOR_ADDR) ? HIGH : LOW);
 
-  //define the shiftOut Pins as output
-  pinMode(DS, OUTPUT);
-  pinMode(LATCH, OUTPUT);
-  pinMode(CLOCK, OUTPUT);
+    u8x8.setFont(u8x8_font_lucasarts_scumm_subtitle_o_2x2_n);
+    u8x8.drawString(0, 2, (EEPROM.read(GAME_SELECTOR_ADDR) ? "2" : "1"));	
+    u8x8.setFont(u8x8_font_pressstart2p_r );
+    u8x8.drawString(2, 2, "ABCDEfg 123456");
+    u8x8.drawString(2, 3, "ABCDEfg 123456");
+    
+    old_state = analogRead(A6);
+  } else { //PROGRAM MODE
 
-  //define the boost pins as output (take care that they are LOW)
-  digitalWrite(VH, LOW);
-  pinMode(VH, OUTPUT);
-  digitalWrite(VPP, LOW);
-  pinMode(VPP, OUTPUT);
-/*
-  digitalWrite(VPP_27C256, LOW);
-  pinMode(VPP_27C256, OUTPUT);
-*/
-  //define the EEPROM Pins as output (take care that they are HIGH)
-  digitalWrite(OE, HIGH);
-  pinMode(OE, OUTPUT);
-  digitalWrite(CE, HIGH);
-  pinMode(CE, OUTPUT);
- /*
-  digitalWrite(A15VPP, HIGH);
-  pinMode(A15VPP, OUTPUT);
-  digitalWrite(A10, HIGH);
-  pinMode(A10, OUTPUT);
-*/
-  Serial.println("Select Read, Write, Verify, Erase, BlankCheck [R/W/V/E/B]");
+    //Serial.begin(115200);
 
+    Serial.println("MSXLinkCart v1.0");
+    Serial.println("");
+
+    arraySize = sizeof(bin_file) / sizeof(bin_file[0]);
+
+    //define the shiftOut Pins as output
+    pinMode(DS, OUTPUT);
+    pinMode(LATCH, OUTPUT);
+    pinMode(CLOCK, OUTPUT);
+
+    digitalWrite(A15PIN, LOW);
+    pinMode(A15PIN, OUTPUT);
+
+    //define the boost pins as output (take care that they are LOW)
+    digitalWrite(VH, LOW);
+    pinMode(VH, OUTPUT);
+    digitalWrite(VPP, LOW);
+    pinMode(VPP, OUTPUT);
+
+    //define the EEPROM Pins as output (take care that they are HIGH)
+    digitalWrite(OE, HIGH);
+    pinMode(OE, OUTPUT);
+    digitalWrite(CE, HIGH);
+    pinMode(CE, OUTPUT);
+
+    Serial.println("Select Read, Write, Verify, Erase, TestWrite, BlankCheck [R/W/V/E/T/B]");
+  }
 }
 
 //###############################################################
@@ -134,56 +156,72 @@ void setup() {
 //###############################################################
 
 void loop() {
+  if (analogRead(A7) > 700){ // PLAY MODE
+    cur_state = analogRead(A6);
+    
+    if ( cur_state - old_state > 500 ) {
+      EEPROM.write(GAME_SELECTOR_ADDR, (EEPROM.read(GAME_SELECTOR_ADDR) + 1) % 2);
+      u8x8.setFont(u8x8_font_lucasarts_scumm_subtitle_o_2x2_n);
+      u8x8.drawString(0, 2, (EEPROM.read(GAME_SELECTOR_ADDR) ? "2" : "1"));	
+      u8x8.setFont(u8x8_font_pressstart2p_r );
+      u8x8.drawString(2, 2, "Game switched ");
+      u8x8.drawString(2, 3, "Please RESTART");
+    }
+    old_state = cur_state;
+    delay(200);
 
-  if (Serial.available() > 0) {
-    ReadSerial();
+  } else { // PROGRAM MODE
+
+
+    if (Serial.available() > 0) {
+      ReadSerial();
+    }
+
+    if (mode == "V") {
+      Serial.println(""); Serial.println("Verifying EEPROM against bin_file");
+      Verify();
+      resetVariables();
+    }
+
+    if (mode == "R") {
+      Serial.println(""); Serial.println("Read EEPROM");
+      getStartAddress();
+      getBlockSize();
+      Read();
+      resetVariables();
+    }
+
+    if (mode == "W") {
+      Serial.println(""); Serial.println("Writing to EEPROM");
+      getStartAddress();
+      Write();
+      resetVariables();
+    }
+
+    if (mode == "E") {
+      Serial.println(""); Serial.println("Erasing W27C512 EEPROM");
+      Serial.println("Starting in 5 secs");
+      delay(5000);
+      Erase();
+      resetVariables();
+    }
+
+    if (mode == "T") {
+      Serial.println(""); Serial.println("WRITE Test Data W27C512 EEPROM");
+      Serial.println("Starting in 5 secs");
+      delay(5000);
+      TestWrite();
+      resetVariables();
+    }
+
+    if (mode == "B") {
+      Serial.println(""); Serial.println("Blank check EEPROM");
+      getStartAddress();
+      getBlockSize();
+      BlankCheck();
+      resetVariables();
+    }
   }
-
-  if (mode == "V") {
-    Serial.println(""); Serial.println("Verifying EEPROM against bin_file");
-    Verify();
-    resetVariables();
-  }
-
-  if (mode == "R") {
-    Serial.println(""); Serial.println("Read EEPROM");
-    getStartAddress();
-    getBlockSize();
-    Read();
-    resetVariables();
-  }
-
-  if (mode == "W") {
-    Serial.println(""); Serial.println("Writing to EEPROM");
-    getStartAddress();
-    Write();
-    resetVariables();
-  }
-
-  if (mode == "E") {
-    Serial.println(""); Serial.println("Erasing W27C512 EEPROM");
-    Serial.println("Starting in 5 secs");
-    delay(5000);
-    Erase();
-    resetVariables();
-  }
-
-  if (mode == "T") {
-    Serial.println(""); Serial.println("WRITE TEST '66' W27C512 EEPROM");
-    Serial.println("Starting in 5 secs");
-    delay(5000);
-    TestWrite();
-    resetVariables();
-  }
-
-  if (mode == "B") {
-    Serial.println(""); Serial.println("Blank check EEPROM");
-    getStartAddress();
-    getBlockSize();
-    BlankCheck();
-    resetVariables();
-  }
-
 }
 
 //###############################################################
@@ -197,18 +235,18 @@ void Read() {
 
   Serial.println(BlockSize);
 
-  for (int y = 0; y < BlockSize / 256; y++) {               // Loop If bin_size is 8k then 8192/256 = 32  times to read 8K of memory
+  for (int y = 0; y < BlockSize / BUFFERSIZE; y++) {               // Loop If bin_size is 8k then 8192/256 = 32  times to read 8K of memory
 
     Serial.println("");
 
     read_start();
     for (int x = 0; x < BUFFERSIZE; ++x) {        //Loop and read first 256 bytes
-      buffer[x] = read_byte(addr + 256 * y + x);
+      buffer[x] = read_byte(addr + BUFFERSIZE * y + x);
       delayMicroseconds(100);
     }
     read_end();
     int count = 0;
-    printHex((addr + 256 * y), 4);
+    printHex((addr + BUFFERSIZE * y), 4);
     Serial.print(": ");
 
     for (long x = 0; x < BUFFERSIZE; x++) {
@@ -219,7 +257,7 @@ void Read() {
       if ((count > 15) and (x < BUFFERSIZE - 1)) {
         count = 0;
         Serial.println("");
-        printHex((addr + 256 * y + x), 4);
+        printHex((addr + BUFFERSIZE * y + x), 4);
         Serial.print(": ");
       }
     }
@@ -236,7 +274,7 @@ void Verify() {
   long addr = Start_Address;
   Last_Address = addr;
 
-  for (int y = 0; y < arraySize / 256; y++) {               // Loop 8192/256 = 32  times to read 8K of memory
+  for (int y = 0; y < arraySize / BUFFERSIZE; y++) {               // Loop 8192/256 = 32  times to read 8K of memory
     Serial.print(".");
 
 #ifdef DEBUG
@@ -245,14 +283,14 @@ void Verify() {
 
     read_start();
     for (int x = 0; x < BUFFERSIZE; ++x) {        //Loop and read first 256 bytes
-      buffer[x] = read_byte(addr + 256 * y + x);
+      buffer[x] = read_byte(addr + BUFFERSIZE * y + x);
       delayMicroseconds(100);
     }
     read_end();
 
 #ifdef DEBUG
     int count = 0;
-    printHex((addr + 256 * y), 4);
+    printHex((addr + BUFFERSIZE * y), 4);
     Serial.print(": ");
 #endif
 
@@ -266,13 +304,13 @@ void Verify() {
       if ((count > 15) and (x < BUFFERSIZE - 1)) {
         count = 0;
         Serial.println("");
-        printHex((addr + 256 * y + x), 2);
+        printHex((addr + BUFFERSIZE * y + x), 2);
         Serial.print(": ");
       }
 
 #endif
 
-      if (buffer[x] !=  pgm_read_byte(bin_file + 256 * y + x)) {
+      if (buffer[x] !=  pgm_read_byte(bin_file + BUFFERSIZE * y + x)) {
         Serial.println("");
         Serial.print("Compare error at 0x");
         Serial.print(x, HEX);
@@ -281,7 +319,7 @@ void Verify() {
         printHex(buffer[x], 2);
         Serial.println("");
         Serial.print("Expected: 0x");
-        printHex(pgm_read_byte(&bin_file[x + 256 * y]), 2);
+        printHex(pgm_read_byte(&bin_file[x + BUFFERSIZE * y]), 2);
         Serial.println("");
         while (1) {
           // Halt
@@ -307,7 +345,7 @@ void BlankCheck() {
     Serial.print(".");
     read_start();
     for (int x = 0; x < BUFFERSIZE; ++x) {
-      buffer[x] = read_byte(addr + 256 * y + x);
+      buffer[x] = read_byte(addr + BUFFERSIZE * y + x);
       delayMicroseconds(100);
     }
     read_end();
@@ -325,7 +363,7 @@ void BlankCheck() {
         Serial.print("Found 0x");
         printHex(buffer[x], 2);
         Serial.print(" at position 0x");
-        printHex((addr + 256 * y + x), 2);
+        printHex((addr + BUFFERSIZE * y + x), 2);
         while (1) {
 
         }
@@ -334,7 +372,7 @@ void BlankCheck() {
   }
   Serial.println("");
   Serial.println("");
-  Serial.println("E/EPROM  is blank");
+  Serial.println("EEPROM  is blank");
 }
 
 //###############################################################
@@ -345,30 +383,16 @@ void Write() {
   Last_Address = addr;
 
   //Check if bin_file is larger than the EPROM
-  if (chipType == CHIP27C128) {
-    if ( (Start_Address + arraySize) > 16384) {
-      Error();
-    }
+  if ( (Start_Address + arraySize) > 65535) {
+    Error();
   }
 
-  if (chipType == CHIP27C256) {
-    if ( (Start_Address + arraySize) > 32768) {
-      Error();
-    }
-  }
-
-  if ((chipType == CHIP27SF512) ) {
-    if ( (Start_Address + arraySize) > 65535) {
-      Error();
-    }
-  }
-
-  for (int y = 0; y < arraySize / 256; y++) {               // Loop 8192/256 = 32  times to read 8K of memory
+  for (int y = 0; y < arraySize / BUFFERSIZE; y++) {               // Loop 8192/256 = 32  times to read 8K of memory
 
 #ifdef DEBUG
     int count = 0;
     Serial.println("");
-    printHex((addr + 256 * y), 4);
+    printHex((addr + BUFFERSIZE * y), 4);
     Serial.print(": ");
 #endif
 
@@ -384,18 +408,18 @@ void Write() {
       count++;
       Serial.print(" ");
 
-      printHex(pgm_read_byte(&bin_file[x + 256 * y]), 2);
+      printHex(pgm_read_byte(&bin_file[x + BUFFERSIZE * y]), 2);
 
       if ((count > 15) and (x < BUFFERSIZE - 1)) {
         count = 0;
         Serial.println("");
-        printHex((addr + 256 * y + x), 4);
+        printHex((addr + BUFFERSIZE * y + x), 4);
         Serial.print(": ");
       }
 
 #endif
 
-      fast_write(addr + 256 * y + x, pgm_read_byte(&bin_file[x + 256 * y]));
+      fast_write(addr + BUFFERSIZE * y + x, pgm_read_byte(&bin_file[x + BUFFERSIZE * y]));
 
     }
 
@@ -460,23 +484,6 @@ void read_start() {
   set_ce(LOW);
   //enable output
   set_oe(LOW);
-/*
-  //Set VPP to Low/High (27C2128, 27C256)
-  if (chipType == CHIP27C128) {
-    digitalWrite(A15VPP, LOW);
-    Set_Output_At(15, HIGH);        //With 27C128 A15 becomes PGM
-  }
-  else if (chipType == CHIP27C256 || chipType == CHIP28C64) {
-    digitalWrite(A15VPP, HIGH);   //the 28C64 doesnt care but the 27C64 is VPP
-  }
-  else if (chipType == CHIP27C32) {
-    digitalWrite(A15VPP, LOW);  //normally used for A15/VPP, this pin is not used on 24pin chips
-    Set_Output_At(15, LOW);     //normally used for A14, this pin is not used on 24pin chips
-    Set_Output_At(14, HIGH); //**** normally used for A13, this pin is now VCC (5v) ****
-    Set_Output_At(13, LOW);     //normally used for A12, this pin is not used on 24pin chips
-    delayMicroseconds(5);
-  }
-*/
 }
 
 void read_end() {
@@ -484,11 +491,6 @@ void read_end() {
   set_oe(HIGH);
   //disable chip select
   set_ce(HIGH);
-/*
-  //Set VPP to Low/High (27C2128, 27C256)
-  if (chipType == CHIP27C128) Set_Output_At(15, LOW);         //With 27C128 A15 becomes PGM
-  else if (chipType == CHIP27C256)  digitalWrite(A15VPP, LOW);
-*/
 }
 
 inline byte read_byte(unsigned int address)
@@ -504,19 +506,6 @@ void write_start() {
 
   set_vpp(HIGH);
 
-  /*
-  //Set VPP to low on 29C256 (not 27C256/27SF256 as its read only)
-  if (chipType == CHIP27C256) {
-    //Serial.print(".");
-    digitalWrite(A15VPP, LOW);
-    delayMicroseconds(5);
-  }
-
-  if (chipType == CHIP27C128) {
-    Set_Output_At(15, LOW);         //With 27C128 A15 becomes PGM, LOW when programming
-    delayMicroseconds(5);
-  }
-  */
   delayMicroseconds(5);
   data_bus_output();
 }
@@ -529,64 +518,15 @@ void write_end() {
 
 inline void fast_write(unsigned int address, byte data)
 {
-  /*
-  if (chipType == CHIP28C64 || chipType == CHIP28C256) {
-    //this function uses /DATA polling to get the end of the page write cycle. This is much faster than waiting 10ms
-    static unsigned int lastAddress = 0;
-    static byte lastData = 0;
+  set_address_bus(address);
+  write_data_bus(data);
+  delayMicroseconds(1);
 
-    //enable chip select
-    set_ce(LOW);
-
-    //data poll
-    if (((lastAddress ^ address) & 0xFFC0 || chipType == CHIP28C64) && !firstWritePass)
-    {
-      unsigned long startTime = millis();
-
-      //poll data until data matches
-      data_bus_input();
-      set_oe(LOW);
-
-      //set timeout here longer than JBurn timeout
-      while (lastData != read_data_bus()) {
-        if (millis() - startTime > 3000) return false;
-      }
-
-      set_oe(HIGH);
-      delayMicroseconds(1);
-      data_bus_output();
-    }
-
-    //set address and data for write
-    set_address_bus(address);
-    write_data_bus(data);
-    delayMicroseconds(1);
-
-    //strobe write
-    set_we(LOW);
-    set_we(HIGH);
-    //disable chip select
-    set_ce(HIGH);
-
-    lastAddress = address;
-    lastData = data;
-    firstWritePass = false;
-  }
-  else
-  {
-  */
-    set_address_bus(address);
-    write_data_bus(data);
-    delayMicroseconds(1);
-
-    //programming pulse
-    set_ce(LOW);
-    delayMicroseconds(100); // for W27E512, works for 27SF512 also (but 27SF512 should be 20ms)
-    set_ce(HIGH);
-    delayMicroseconds(1);
-  /*
-  }
-  */
+  //programming pulse
+  set_ce(LOW);
+  delayMicroseconds(100); // for W27E512, works for 27SF512 also (but 27SF512 should be 20ms)
+  set_ce(HIGH);
+  delayMicroseconds(1);
 }
 
 //###############################################################
@@ -649,22 +589,10 @@ inline void set_address_bus(unsigned int address)
   byte hi, low;
   hi = (address >> 8);
   low = address & 0xff;
-  /*
-  //A14 become WE on 28C64 && 28C256, make sure dont use the output that were generally used for A14
-  if (chipType == CHIP28C64 || chipType == CHIP28C256) bitSet(hi, 6); //set ouput 7 on hi byte
-  else if (chipType == CHIP27C32) {
-    bitClear(hi, 6);  //set ouput 7 on hi byte
-    bitSet(hi, 5);    //set ouput 6 on hi byte, this is now VCC
-    bitClear(hi, 4);  //set ouput 5 on hi byte
-  }
-  */
 
   ApplyShiftAt(hi, low);
-  /*
-  digitalWrite(A10, (address & 1024) ? HIGH : LOW );
-  if (chipType == CHIP28C64 || chipType == CHIP28C256) digitalWrite(A15VPP, (address & 16384) ? HIGH : LOW); //A15/VPP become A14 on 28C64 && 28C256
-  else if (chipType == CHIP27SF512) digitalWrite(A15VPP, (address & 32768) ? HIGH : LOW);
-  */
+  digitalWrite(A15PIN, (address & 32768) ? HIGH : LOW); // A15 
+  delayMicroseconds(1);
 }
 
 inline void Set_Output_At(unsigned int Position, bool IsHigh)
@@ -754,44 +682,16 @@ inline void set_ce (byte state)
   digitalWrite(CE, state);
 }
 
-//**attention, this line is LOW - active**
-inline void set_we (byte state)
-{
-  //if (chipType == CHIP28C64 || chipType == CHIP28C256 || CHIP27C128) Set_Output_At(15, state);  //output 15 become WE (since there are 8 outputs by 74HC595, its the #7 ouputs on the 2nd 74HC595)
-}
-
 //Boost VPP 12V
 void set_vpp (byte state)
 {
-/*
-  switch (chipType) {
-    case CHIP27SF512:
-      digitalWrite(VPP, state);
-      break;
-
-    case CHIP27C256:                          // Vpp on pin 1
-      digitalWrite(VPP_27C256, state);
-      break;
-    case CHIP27C128:                          // Vpp on pin 1
-      digitalWrite(VPP_27C256, state);
-      break;
-    default:
-      break;
-  }
-*/
-      digitalWrite(VPP, state); //only for W27C512
+  digitalWrite(VPP, state); //only for W27C512
 }
 
 //Boost Erase 12V
 void set_vh (byte state)
 {
-  switch (chipType) {
-    case CHIP27SF512:
-      digitalWrite(VH, state);
-      break;
-    default:
-      break;
-  }
+  digitalWrite(VH, state);
 }
 
 //==========================================================================
@@ -814,84 +714,31 @@ void ReadSerial() {
   if ((rx_byte == 'V') || (rx_byte == 'v')) {
     Serial.println(""); Serial.print("Verify selected"); Serial.println("");
     mode = "V";
-    selectChip();
   }
 
   if ((rx_byte == 'R') || (rx_byte == 'r')) {
     Serial.println(""); Serial.print("Read selected"); Serial.println("");
     mode = "R";
-    selectChip();
   }
 
   if ((rx_byte == 'W') || (rx_byte == 'w')) {
     Serial.println(""); Serial.print("Write selected"); Serial.println("");
     mode = "W";
-    selectChip();
   }
 
   if ((rx_byte == 'E') || (rx_byte == 'e')) {
     Serial.println(""); Serial.print("Erase selected"); Serial.println("");
     mode = "E";
-    //Can only erase W27C512
-    chipType = CHIP27SF512;    //W27C512;
-
   }
 
   if ((rx_byte == 'T') || (rx_byte == 't')) {
     Serial.println(""); Serial.print("TestWrite selected"); Serial.println("");
     mode = "T";
-    //Can only erase W27C512
-    chipType = CHIP27SF512;    //W27C512;
-
   }
 
   if ((rx_byte == 'B') || (rx_byte == 'b')) {
     Serial.println(""); Serial.print("BlankCheck selected"); Serial.println("");
     mode = "B";
-    selectChip();
-  }
-
-}
-
-void selectChip() {
-  boolean selected = false;
-  String rx_string;
-
-  Serial.println(""); Serial.println("Enter chip: 27C128, 27C256, 27C512, W27C512"); Serial.println("");
-
-  while (selected == false) {
-    if (Serial.available() > 0) {
-      rx_string = Serial.readString();
-      rx_string.trim();
-
-      if (rx_string == "27C128" || rx_string == "27c128") {
-        chipType = CHIP27C128;
-        Serial.println("27C128 selected");
-        selected = true;
-        mem_count = 64;
-      }
-
-      if (rx_string == "27C256" || rx_string == "27c256") {
-        chipType = CHIP27C256;
-        Serial.println("27C256 selected");
-        selected = true;
-        mem_count = 128;
-      }
-
-      if (rx_string == "27C512" || rx_string == "27c512") {
-        chipType = CHIP27SF512;
-        Serial.println("27C512 selected");
-        selected = true;
-        mem_count = 32;
-      }
-
-      if (rx_string == "W27C512" || rx_string == "w27c512") {
-        chipType = CHIP27SF512;
-        Serial.println("W27C512 selected");
-        selected = true;
-        mem_count = 32;
-      }
-    }
   }
 
 }
@@ -902,18 +749,8 @@ void getStartAddress() {
   int charsRead;
   char input[5];
 
-  Serial.println(""); Serial.print("Enter start address in hex ");
-  if (chipType == 1) {
-    Serial.println("(0000, 2000) :");
-  }
-
-  if (chipType == 2) {
-    Serial.println("(0000, 2000, 4000, 6000) :");
-  }
-
-  if ((chipType == 5)) {
-    Serial.println("(0000, 2000, 4000, 6000, 8000, a000, c000, e000): ");
-  }
+  Serial.println(""); 
+  Serial.println("Enter start address in hex (0000, 2000, 4000, 6000, 8000, a000, c000, e000): ");
 
   Serial.println("");
 
@@ -952,11 +789,7 @@ void getBlockSize() {
   char input[5];
 
   Serial.print("Enter block size in hex ");
-  if (chipType == 1) {
-    Serial.println("(1000, 2000, 4000)");
-  } else {
-    Serial.println("(1000, 2000, 4000, 6000)");
-  }
+  Serial.println("(1000, 2000, 4000, 6000)");
 
   while (selected == false) {
 
@@ -979,7 +812,6 @@ void getBlockSize() {
 
 void resetVariables() {
   mode = "";
-  chipType = CHIP27SF512;
   Serial.println("");
   Serial.println("Select Read, Write, Verify, Erase, TestWrite, BlankCheck [R/W/V/E/T/B]");
 }
