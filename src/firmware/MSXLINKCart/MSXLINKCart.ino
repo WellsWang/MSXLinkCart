@@ -76,7 +76,7 @@ int count = 0;  //Memory size
 int mem_count;
 int arraySize;
 long BlockSize;
-String mode;
+char mode;
 
 long Start_Address;         //0x0000, 0x2000, 0x4000, 0x6000, 0x8000, 0xa000, 0xc000, 0xe000
 int old_state, cur_state;
@@ -85,7 +85,7 @@ int old_state, cur_state;
 // Setup
 //###############################################################
 void setup() {
-  Serial.begin(115200);
+
   u8x8.begin();
   u8x8.setPowerSave(0);
 
@@ -104,28 +104,23 @@ void setup() {
     pinMode(D5, INPUT);
     pinMode(D6, INPUT);
     pinMode(D7, INPUT);
-   // pinMode(OE, INPUT);
-   // pinMode(VH, INPUT);
-   // pinMode(VPP, INPUT);
+    //pinMode(OE, INPUT);
+    //pinMode(VH, INPUT);
+    //pinMode(VPP, INPUT);
     pinMode(A15PIN, OUTPUT);
     pinMode(A6, INPUT);
     digitalWrite(A15PIN, EEPROM.read(GAME_SELECTOR_ADDR) ? HIGH : LOW);
-
-    u8x8.setFont(u8x8_font_lucasarts_scumm_subtitle_o_2x2_n);
-    u8x8.drawString(0, 2, (EEPROM.read(GAME_SELECTOR_ADDR) ? "2" : "1"));	
-    u8x8.setFont(u8x8_font_pressstart2p_r );
-    u8x8.drawString(2, 2, "ABCDEfg 123456");
-    u8x8.drawString(2, 3, "ABCDEfg 123456");
+    
+    updateGameInfo(EEPROM.read(GAME_SELECTOR_ADDR));
     
     old_state = analogRead(A6);
   } else { //PROGRAM MODE
 
-    //Serial.begin(115200);
+    Serial.begin(115200);
+    mode = 'C';
+    updateInfo("C", "Wating for", "connection...");
 
-    Serial.println("MSXLinkCart v1.0");
-    Serial.println("");
-
-    arraySize = sizeof(bin_file) / sizeof(bin_file[0]);
+    //arraySize = sizeof(bin_file) / sizeof(bin_file[0]);
 
     //define the shiftOut Pins as output
     pinMode(DS, OUTPUT);
@@ -146,8 +141,6 @@ void setup() {
     pinMode(OE, OUTPUT);
     digitalWrite(CE, HIGH);
     pinMode(CE, OUTPUT);
-
-    Serial.println("Select Read, Write, Verify, Erase, TestWrite, BlankCheck [R/W/V/E/T/B]");
   }
 }
 
@@ -161,11 +154,7 @@ void loop() {
     
     if ( cur_state - old_state > 500 ) {
       EEPROM.write(GAME_SELECTOR_ADDR, (EEPROM.read(GAME_SELECTOR_ADDR) + 1) % 2);
-      u8x8.setFont(u8x8_font_lucasarts_scumm_subtitle_o_2x2_n);
-      u8x8.drawString(0, 2, (EEPROM.read(GAME_SELECTOR_ADDR) ? "2" : "1"));	
-      u8x8.setFont(u8x8_font_pressstart2p_r );
-      u8x8.drawString(2, 2, "Game switched ");
-      u8x8.drawString(2, 3, "Please RESTART");
+      updateInfo((EEPROM.read(GAME_SELECTOR_ADDR) ? "2" : "1"), "Game switched", "Please RESTART");
     }
     old_state = cur_state;
     delay(200);
@@ -174,51 +163,27 @@ void loop() {
 
 
     if (Serial.available() > 0) {
-      ReadSerial();
+      readSerialCommand();
     }
 
-    if (mode == "V") {
-      Serial.println(""); Serial.println("Verifying EEPROM against bin_file");
-      Verify();
-      resetVariables();
-    }
 
-    if (mode == "R") {
-      Serial.println(""); Serial.println("Read EEPROM");
-      getStartAddress();
-      getBlockSize();
-      Read();
-      resetVariables();
-    }
+    if (mode == 'W') {
+      delay(500);
+      updateInfo("W", "Erasing...", " ");
+      erase();
+      Serial.print("W");
+      delay(300);
 
-    if (mode == "W") {
-      Serial.println(""); Serial.println("Writing to EEPROM");
-      getStartAddress();
-      Write();
-      resetVariables();
-    }
+      writeGameName(0);
+      Serial.print("W");
+      delay(300);
 
-    if (mode == "E") {
-      Serial.println(""); Serial.println("Erasing W27C512 EEPROM");
-      Serial.println("Starting in 5 secs");
-      delay(5000);
-      Erase();
-      resetVariables();
-    }
+      writeGameName(1);
+      EEPROM.write(GAME_SELECTOR_ADDR, 0x0);
+      Serial.print("W");
+      delay(300);
 
-    if (mode == "T") {
-      Serial.println(""); Serial.println("WRITE Test Data W27C512 EEPROM");
-      Serial.println("Starting in 5 secs");
-      delay(5000);
-      TestWrite();
-      resetVariables();
-    }
-
-    if (mode == "B") {
-      Serial.println(""); Serial.println("Blank check EEPROM");
-      getStartAddress();
-      getBlockSize();
-      BlankCheck();
+      writeFromSerial();
       resetVariables();
     }
   }
@@ -227,305 +192,160 @@ void loop() {
 //###############################################################
 // Functions
 //###############################################################
-//Almost the same as Verify
-
-void Read() {
-  long addr = Start_Address;
-  Last_Address = addr;
-
-  Serial.println(BlockSize);
-
-  for (int y = 0; y < BlockSize / BUFFERSIZE; y++) {               // Loop If bin_size is 8k then 8192/256 = 32  times to read 8K of memory
-
-    Serial.println("");
-
-    read_start();
-    for (int x = 0; x < BUFFERSIZE; ++x) {        //Loop and read first 256 bytes
-      buffer[x] = read_byte(addr + BUFFERSIZE * y + x);
-      delayMicroseconds(100);
-    }
-    read_end();
-    int count = 0;
-    printHex((addr + BUFFERSIZE * y), 4);
-    Serial.print(": ");
-
-    for (long x = 0; x < BUFFERSIZE; x++) {
-      count++;
-      Serial.print(" ");
-
-      printHex(buffer[x], 2);
-      if ((count > 15) and (x < BUFFERSIZE - 1)) {
-        count = 0;
-        Serial.println("");
-        printHex((addr + BUFFERSIZE * y + x), 4);
-        Serial.print(": ");
-      }
-    }
-  }
-
-  Serial.println("");
-  Serial.println("");
-  Serial.println("Read Completed");
-}
 
 //###############################################################
 
-void Verify() {
-  long addr = Start_Address;
-  Last_Address = addr;
-
-  for (int y = 0; y < arraySize / BUFFERSIZE; y++) {               // Loop 8192/256 = 32  times to read 8K of memory
-    Serial.print(".");
-
-#ifdef DEBUG
-    Serial.println("");
-#endif
-
-    read_start();
-    for (int x = 0; x < BUFFERSIZE; ++x) {        //Loop and read first 256 bytes
-      buffer[x] = read_byte(addr + BUFFERSIZE * y + x);
-      delayMicroseconds(100);
-    }
-    read_end();
-
-#ifdef DEBUG
-    int count = 0;
-    printHex((addr + BUFFERSIZE * y), 4);
-    Serial.print(": ");
-#endif
-
-    for (long x = 0; x < BUFFERSIZE; x++) {
-
-#ifdef DEBUG
-      count++;
-      Serial.print(" ");
-
-      printHex(buffer[x], 2);
-      if ((count > 15) and (x < BUFFERSIZE - 1)) {
-        count = 0;
-        Serial.println("");
-        printHex((addr + BUFFERSIZE * y + x), 2);
-        Serial.print(": ");
-      }
-
-#endif
-
-      if (buffer[x] !=  pgm_read_byte(bin_file + BUFFERSIZE * y + x)) {
-        Serial.println("");
-        Serial.print("Compare error at 0x");
-        Serial.print(x, HEX);
-        Serial.println("");
-        Serial.print("Found: 0x");
-        printHex(buffer[x], 2);
-        Serial.println("");
-        Serial.print("Expected: 0x");
-        printHex(pgm_read_byte(&bin_file[x + BUFFERSIZE * y]), 2);
-        Serial.println("");
-        while (1) {
-          // Halt
-        }
-      }
-    }
-  }
-
-  Serial.println("");
-  Serial.println("");
-  Serial.println("Compare OK");
+void updateInfo(String cap, String line1, String line2){
+  u8x8.setFont(u8x8_font_lucasarts_scumm_subtitle_o_2x2_r);
+  u8x8.drawString(0, 2, cap.c_str());	
+  u8x8.setFont(u8x8_font_pressstart2p_r );
+  u8x8.drawString(2, 2, padRight(line1, 14, ' ').c_str());
+  u8x8.drawString(2, 3, padRight(line2, 14, ' ').c_str());
 }
 
-//###############################################################
+void updateGameInfo(int id){
+  String game_name = readStringFromEEPROM(GAME_INFO_ADDR + GAME_OFFSET * id);
+  String part1 = "";
+  String part2 = "";
 
-void BlankCheck() {
-  //Get Parameters
-  long addr = 0;                                  // Start checking from 0x0000
-  Last_Address = addr;
-
-  for (int y = 0; y < mem_count; y++) {                 // If mem_count is 32 then loop 32 * 256 times to read 8K of memory
-
-    Serial.print(".");
-    read_start();
-    for (int x = 0; x < BUFFERSIZE; ++x) {
-      buffer[x] = read_byte(addr + BUFFERSIZE * y + x);
-      delayMicroseconds(100);
-    }
-    read_end();
-
-    //return Array+Checksum to say it passed
-    //ChecksumThis();
-    for (long x = 0; x < 0xff; x++) {
-
-      //Serial.println(buffer[x]);
-      if (buffer[x] !=  0xFF) {
-        Serial.println("");
-        Serial.println("EEPROM  is not blank");
-
-        Serial.println("");
-        Serial.print("Found 0x");
-        printHex(buffer[x], 2);
-        Serial.print(" at position 0x");
-        printHex((addr + BUFFERSIZE * y + x), 2);
-        while (1) {
-
-        }
-      }
-    }
-  }
-  Serial.println("");
-  Serial.println("");
-  Serial.println("EEPROM  is blank");
+  if (game_name.length()>14){
+    part1 = game_name.substring(0, 14);
+    part2 = game_name.substring(14, (game_name.length() > 28) ? 28 : game_name.length() );
+  } else
+    part1 = game_name;
+  updateInfo(id > 0 ? "2" : "1", part1, part2);
 }
 
-//###############################################################
-
-void Write() {
-
-  long addr = Start_Address;
-  Last_Address = addr;
-
-  //Check if bin_file is larger than the EPROM
-  if ( (Start_Address + arraySize) > 65535) {
-    Error();
+void writeGameName(int id) {
+  String game_name ="";
+  while (!Serial.available()){
   }
-
-  for (int y = 0; y < arraySize / BUFFERSIZE; y++) {               // Loop 8192/256 = 32  times to read 8K of memory
-
-#ifdef DEBUG
-    int count = 0;
-    Serial.println("");
-    printHex((addr + BUFFERSIZE * y), 4);
-    Serial.print(": ");
-#endif
-
-#ifndef DEBUG
-    Serial.print(".");
-#endif
-
-    //Write
-    write_start();
-
-    for (int x = 0; x < BUFFERSIZE; ++x)  {
-#ifdef DEBUG
-      count++;
-      Serial.print(" ");
-
-      printHex(pgm_read_byte(&bin_file[x + BUFFERSIZE * y]), 2);
-
-      if ((count > 15) and (x < BUFFERSIZE - 1)) {
-        count = 0;
-        Serial.println("");
-        printHex((addr + BUFFERSIZE * y + x), 4);
-        Serial.print(": ");
-      }
-
-#endif
-
-      fast_write(addr + BUFFERSIZE * y + x, pgm_read_byte(&bin_file[x + BUFFERSIZE * y]));
-
-    }
-
-    write_end();
+  while (Serial.available()){
+    game_name += char(Serial.read());
   }
-  Serial.println("");
-  Serial.println("");
-  Serial.println("Write complete. Check with Read/Compare");
+  if (game_name.length() > 28)
+    game_name = game_name.substring(0,28);
+  game_name += '\0';
+  writeStringToEEPROM(GAME_INFO_ADDR + GAME_OFFSET * id, game_name);
 }
 
-//###############################################################
 
-void TestWrite() {
+void writeFromSerial() {
   long unsigned addr = 0;
-  for (addr = 0; addr <= 65535 ; addr++) {
-
-    write_start();
-    fast_write(addr, byte(addr % 256));
-    write_end();
-    //delayMicroseconds(100);
-    if (addr % 1024 == 0) Serial.print(".");
+  updateInfo("W", "Programming...", " "); 
+  while (addr <= 65535){
+    if (Serial.available()){
+      char rx_byte = Serial.read(); 
+      writeStart();
+      fastWrite(addr, byte(rx_byte));
+      writeEnd();
+      addr++;
+      if ( addr % 655 == 1){
+        String percent = String(addr / 655) + "%";
+        updateInfo("W", "Programming...", percent); 
+      }
+      if (addr > 0 && addr % 32 == 0 ) {
+        Serial.print("N");
+      }
+    }
   }
-  write_end();
-  
-  Serial.println("");
-  Serial.println("");
-  Serial.println("Write complete. Check with Read/Compare");
 }
-
 
 //###############################################################
 
-void Erase() {
-  set_ce(HIGH);
-  set_oe(HIGH);
-  set_vh(HIGH);
-  set_vpp(HIGH);
+void erase() {
+  setCE(HIGH);
+  setOE(HIGH);
+  setVH(HIGH);
+  setVPP(HIGH);
   delay(1);
-  fast_write(0, 0xff);
+  fastWrite(0, 0xff);
 
   //erase pulse
-  set_ce(LOW);
+  setCE(LOW);
   delay(350);
-  set_ce(HIGH);
+  setCE(HIGH);
   delayMicroseconds(1);
 
   //Turning Off
-  set_vh(LOW);
-  set_vpp(LOW);
+  setVH(LOW);
+  setVPP(LOW);
   delayMicroseconds(1);
-
-  Serial.println("Erase complete. Run a blank check");
 }
 
 //###############################################################
 // COMMANDS SUBS functions
 //###############################################################
+void writeStringToEEPROM(int addrOffset, const String &strToWrite){
+  byte len = strToWrite.length();
+  updateInfo("W", strToWrite.substring(0,10), "   ");
+  for (int i = 0; i < len; i++) {
+    EEPROM.write(addrOffset + i, strToWrite[i]);
+  }
+}
 
-void read_start() {
-  data_bus_input();
+String readStringFromEEPROM(int addrOffset){
+  int i = 0;
+  char c= ' ';
+  String data="";
+
+  do{
+    c = EEPROM.read(addrOffset + i);
+    data += ' ';
+    data[i] = c;
+    i++;
+  } while( c != '\0' && i < 28);
+  return data;
+}
+
+void readStart() {
+  dataBusInput();
   //enable chip select
-  set_ce(LOW);
+  setCE(LOW);
   //enable output
-  set_oe(LOW);
+  setOE(LOW);
 }
 
-void read_end() {
+void readEnd() {
   //disable output
-  set_oe(HIGH);
+  setOE(HIGH);
   //disable chip select
-  set_ce(HIGH);
+  setCE(HIGH);
 }
 
-inline byte read_byte(unsigned int address)
+inline byte readByte(unsigned int address)
 {
-  set_address_bus(address);
-  return read_data_bus();
+  setAddressBus(address);
+  return readDataBus();
 }
 
-void write_start() {
+void writeStart() {
   firstWritePass = true;
   //disable output
-  set_oe(HIGH);
+  setOE(HIGH);
 
-  set_vpp(HIGH);
+  setVPP(HIGH);
 
   delayMicroseconds(5);
-  data_bus_output();
+  dataBusOutput();
 }
 
-void write_end() {
-  set_vpp(LOW);
-  data_bus_input();
+void writeEnd() {
+  setVPP(LOW);
+  dataBusInput();
 
 }
 
-inline void fast_write(unsigned int address, byte data)
+inline void fastWrite(unsigned int address, byte data)
 {
-  set_address_bus(address);
-  write_data_bus(data);
+  setAddressBus(address);
+  writeDataBus(data);
   delayMicroseconds(1);
 
   //programming pulse
-  set_ce(LOW);
+  setCE(LOW);
   delayMicroseconds(100); // for W27E512, works for 27SF512 also (but 27SF512 should be 20ms)
-  set_ce(HIGH);
+  setCE(HIGH);
   delayMicroseconds(1);
 }
 
@@ -533,7 +353,7 @@ inline void fast_write(unsigned int address, byte data)
 // DATA BUS functions
 //###############################################################
 
-void data_bus_input() {
+void dataBusInput() {
   pinMode(D0, INPUT);
   pinMode(D1, INPUT);
   pinMode(D2, INPUT);
@@ -544,7 +364,7 @@ void data_bus_input() {
   pinMode(D7, INPUT);
 }
 
-void data_bus_output() {
+void dataBusOutput() {
   pinMode(D0, OUTPUT);
   pinMode(D1, OUTPUT);
   pinMode(D2, OUTPUT);
@@ -555,7 +375,7 @@ void data_bus_output() {
   pinMode(D7, OUTPUT);
 }
 
-byte read_data_bus()
+byte readDataBus()
 {
   byte b = 0;
   if (digitalRead(D0) == HIGH) b |= 1;
@@ -569,7 +389,7 @@ byte read_data_bus()
   return (b);
 }
 
-inline void write_data_bus(byte data)
+inline void writeDataBus(byte data)
 {
   digitalWrite(D0, data & 1);
   digitalWrite(D1, data & 2);
@@ -584,18 +404,18 @@ inline void write_data_bus(byte data)
 //###############################################################
 // FAST SWIFT functions
 //###############################################################
-inline void set_address_bus(unsigned int address)
+inline void setAddressBus(unsigned int address)
 {
   byte hi, low;
   hi = (address >> 8);
   low = address & 0xff;
 
-  ApplyShiftAt(hi, low);
+  applyShiftAt(hi, low);
   digitalWrite(A15PIN, (address & 32768) ? HIGH : LOW); // A15 
   delayMicroseconds(1);
 }
 
-inline void Set_Output_At(unsigned int Position, bool IsHigh)
+inline void setOutputAt(unsigned int Position, bool IsHigh)
 {
   byte hi, low;
   hi = (Last_Address >> 8);
@@ -608,10 +428,10 @@ inline void Set_Output_At(unsigned int Position, bool IsHigh)
     if (IsHigh) bitSet(low, Position);
     else  bitClear(low, Position);
   }
-  ApplyShiftAt(hi, low);
+  applyShiftAt(hi, low);
 }
 
-void ApplyShiftAt(byte hi, byte low)
+void applyShiftAt(byte hi, byte low)
 {
   fastShiftOut(hi);
   fastShiftOut(low);
@@ -644,185 +464,54 @@ void fastShiftOut(byte data) {
   bitClear(STROBE_PORT, STROBE_CLOCK);
 }
 
-int GetAddress(unsigned int Position)
-{
-  int Address = 0;
-  if (Position == 1) Address = 1;
-  if (Position == 2) Address = 2;
-  if (Position == 3) Address = 4;
-  if (Position == 4) Address = 8;
-  if (Position == 5) Address = 16;
-  if (Position == 6) Address = 32;
-  if (Position == 7) Address = 64;
-  if (Position == 8) Address = 128;
-  if (Position == 9) Address = 256;
-  if (Position == 10) Address = 512;
-  if (Position == 11) Address = 1024;
-  if (Position == 12) Address = 2048;
-  if (Position == 13) Address = 4096;
-  if (Position == 14) Address = 8192;
-  if (Position == 15) Address = 16384;
-  if (Position == 16) Address = 32768;
-  return Address;
-}
-
 //###############################################################
 // PINS functions
 //###############################################################
 
 //**attention, this line is LOW - active**
-inline void set_oe (byte state)
+inline void setOE (byte state)
 {
   digitalWrite(OE, state);
 }
 
 //**attention, this line is LOW - active**
-inline void set_ce (byte state)
+inline void setCE (byte state)
 {
   digitalWrite(CE, state);
 }
 
 //Boost VPP 12V
-void set_vpp (byte state)
+void setVPP (byte state)
 {
   digitalWrite(VPP, state); //only for W27C512
 }
 
 //Boost Erase 12V
-void set_vh (byte state)
+void setVH (byte state)
 {
   digitalWrite(VH, state);
 }
 
 //==========================================================================
 
-//Print HEX With leading zeros
-void printHex(int num, int precision) {
-
-  char tmp[16];
-  char format[128];
-
-  sprintf(format, "%%.%dX", precision);
-  sprintf(tmp, format, num);
-  Serial.print(tmp);
+String padRight(String str, int totalLength, char padChar) {
+  while (str.length() < totalLength) {
+    str += padChar;
+  }
+  return str;
 }
 
-void ReadSerial() {
+void readSerialCommand() {
 
-  char rx_byte = Serial.read();       // get the character
-
-  if ((rx_byte == 'V') || (rx_byte == 'v')) {
-    Serial.println(""); Serial.print("Verify selected"); Serial.println("");
-    mode = "V";
-  }
-
-  if ((rx_byte == 'R') || (rx_byte == 'r')) {
-    Serial.println(""); Serial.print("Read selected"); Serial.println("");
-    mode = "R";
-  }
-
-  if ((rx_byte == 'W') || (rx_byte == 'w')) {
-    Serial.println(""); Serial.print("Write selected"); Serial.println("");
-    mode = "W";
-  }
-
-  if ((rx_byte == 'E') || (rx_byte == 'e')) {
-    Serial.println(""); Serial.print("Erase selected"); Serial.println("");
-    mode = "E";
-  }
-
-  if ((rx_byte == 'T') || (rx_byte == 't')) {
-    Serial.println(""); Serial.print("TestWrite selected"); Serial.println("");
-    mode = "T";
-  }
-
-  if ((rx_byte == 'B') || (rx_byte == 'b')) {
-    Serial.println(""); Serial.print("BlankCheck selected"); Serial.println("");
-    mode = "B";
-  }
-
-}
-
-void getStartAddress() {
-
-  boolean selected = false;
-  int charsRead;
-  char input[5];
-
-  Serial.println(""); 
-  Serial.println("Enter start address in hex (0000, 2000, 4000, 6000, 8000, a000, c000, e000): ");
-
-  Serial.println("");
-
-  while (selected == false) {
-
-    if (Serial.available() > 0) {
-      charsRead = Serial.readBytesUntil('\n', input, 5);  // fetch the two characters
-      input[charsRead] = '\0';                            // Make it a string
-
-      Start_Address = StrToHex(input);                              // Convert it
-
-      if ( (Start_Address == 0x0000) || (Start_Address == 0x2000) || (Start_Address == 0x4000) || (Start_Address == 0x6000)
-           || (Start_Address == 0x8000) || (Start_Address == 0xa000) || (Start_Address == 0xc000) || (Start_Address == 0xe000) ) {
-        selected = true;
-      }
-
+  if (mode == 'C'){
+    char rx_byte = Serial.read();       // get the character
+    if ((rx_byte == 'W')) {
+      mode = 'W';
     }
-
   }
-
-  Serial.print("Start Address: ");
-  if (Start_Address == 0) {
-    Serial.println("0000");
-  }
-  else {
-    Serial.println(Start_Address, HEX);
-  }
-  Serial.println("");
-
-}
-
-void getBlockSize() {
-
-  boolean selected = false;
-  int charsRead;
-  char input[5];
-
-  Serial.print("Enter block size in hex ");
-  Serial.println("(1000, 2000, 4000, 6000)");
-
-  while (selected == false) {
-
-    if (Serial.available() > 0) {
-      charsRead = Serial.readBytesUntil('\n', input, 5);  // fetch the two characters
-      input[charsRead] = '\0';                            // Make it a string
-
-      BlockSize = StrToHex(input);                              // Convert it
-
-      if ( (BlockSize == 0x1000) || (BlockSize == 0x2000) || (BlockSize == 0x4000) || (BlockSize == 0x6000) ) {
-        selected = true;
-      }
-
-    }
-
-  }
-  Serial.print("Block Size: "); Serial.println(BlockSize, HEX);
-
 }
 
 void resetVariables() {
-  mode = "";
-  Serial.println("");
-  Serial.println("Select Read, Write, Verify, Erase, TestWrite, BlankCheck [R/W/V/E/T/B]");
-}
-
-long StrToHex(char str[])
-{
-  return (long) strtol(str, 0, 16);
-}
-
-void Error() {
-  Serial.println("Error. Bin file  is too big");
-  Serial.print("bin_file: "); Serial.println(arraySize);
-  while (1);
+  mode = 'C';
+  updateInfo("C", "Program", "finished.");
 }

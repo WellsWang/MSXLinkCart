@@ -1,3 +1,46 @@
+#!/usr/bin/env python
+
+"""
+MSXLinkCart烧录工具
+版本 1.0
+作者： Wells Wang，geek-logic.com, 2025
+
+本程序是一个基于Tkinter的图形界面应用，用于将ROM文件烧录到MSXLinkCart设备。主要功能包括：
+- 选择ROM1和ROM2文件（支持.rom, .img, .bin等格式，最大32KB）
+- 自动截取文件名（最长32字符）并显示
+- 串口选择，自动检测可用串口
+- 烧录按钮，控制烧录流程
+- 串口通信，按协议发送ROM名称和数据到设备
+- 过程中的错误提示和反馈
+主要类和方法说明：
+ROMBurnerApp:
+    __init__(self, root)
+        初始化界面，包括文件选择、串口选择和烧录按钮。
+    get_serial_ports(self)
+        获取当前系统可用的串口列表。
+    update_burn_button_state(self)
+        根据ROM文件选择情况，更新烧录按钮的可用状态。
+    select_file(self)
+        弹出文件选择对话框，校验文件大小，返回文件路径和截取后的文件名。
+    select_rom1(self)
+        选择ROM1文件，并更新界面显示。
+    select_rom2(self)
+        选择ROM2文件，并更新界面显示。
+    burn(self)
+        烧录主流程，构造64KB镜像，将ROM1和ROM2数据分别写入指定区域，调用send_data发送到设备。
+    send_data(self, image)
+        串口通信，按协议发送指令、ROM名称和数据块，并等待设备反馈。
+    wait_for_response(self, ser, response_code)
+        等待设备返回指定反馈代码，超时或错误时弹窗提示。
+    send_rom_name(self, ser, rom_name)
+        发送ROM名称到设备，自动补齐或截断为28字节。
+主程序入口:
+    创建Tkinter主窗口并启动ROMBurnerApp应用。
+注意事项：
+- 烧录前请确保已正确连接MSXLinkCart设备，并选择正确串口。
+- 烧录过程中如遇反馈错误，请重新插拔设备或检查连接。
+"""
+
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import serial
